@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>WebAR 土星 120FPS 高亮版</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        #container { position: relative; width: 100vw; height: 100vh; }
+        #canvas-3d { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+        
+        #debug-container { 
+            position: absolute; bottom: 20px; left: 20px; 
+            width: 160px; height: 120px; 
+            z-index: 2; border: 1px solid #333; 
+            background: #000; pointer-events: none; opacity: 0.7;
+        }
+        #video-feed { position: absolute; width: 100%; height: 100%; transform: scaleX(-1); opacity: 0; }
+        #skeleton-canvas { position: absolute; width: 100%; height: 100%; transform: scaleX(-1); }
+
+        #ui-panel { position: absolute; top: 80px; right: 30px; z-index: 10; }
+        .color-circle {
+            width: 50px; height: 50px; border-radius: 50%; 
+            border: 3px solid #fff; overflow: hidden; 
+            box-shadow: 0 0 25px rgba(255, 170, 0, 0.8); /* [修改] 光晕增强 */
+            background: #ffaa00;
+        }
+        input[type="color"] { position: absolute; top: -10px; left: -10px; width: 80px; height: 80px; opacity: 0; cursor: pointer; }
+
+        #loader { 
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #000; 
+            display: flex; flex-direction: column; justify-content: center; align-items: center; 
+            color: #ffaa00; z-index: 999; font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+
+<div id="loader">
+    <div>🚀 初始化高亮引擎...</div>
+    <div style="font-size:12px; color:#666; margin-top:5px">60,000 粒子 | 120FPS 架构</div>
+</div>
+
+<div id="container">
+    <div id="debug-container">
+        <video id="video-feed" playsinline autoplay muted></video>
+        <canvas id="skeleton-canvas"></canvas>
+    </div>
+    <div id="canvas-3d"></div>
+    <div id="ui-panel">
+        <div class="color-circle" id="color-btn"><input type="color" id="color-picker" value="#ffaa00"></div>
+    </div>
+</div>
+
+<script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+            "@mediapipe/tasks-vision": "https://unpkg.com/@mediapipe/tasks-vision@0.10.3/vision_bundle.mjs"
+        }
+    }
+</script>
+
+<script type="module">
+    import * as THREE from 'three';
+    import Stats from 'three/addons/libs/stats.module.js';
+    import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
+
+    const CONFIG = {
+        count: 60000, 
+        size: 0.18,          // [修改] 尺寸微调大一点点 (0.16 -> 0.18)
+        baseColor: 0xffaa00,
+        responseSpeed: 0.1,
+        rotationSpeed: 0.1
+    };
+
+    let scene, camera, renderer, particles, stats;
+    let handLandmarker, video, skeletonCanvas, skeletonCtx;
+    
+    let currentScale = 1.0; let targetScale = 1.0;
+    let currentQuat = new THREE.Quaternion(); let targetQuat = new THREE.Quaternion();
+    let lastAiTime = 0; const AI_INTERVAL = 30;
+
+    function initScene() {
+        stats = new Stats();
+        stats.dom.style.left = '20px'; stats.dom.style.top = '20px';
+        document.body.appendChild(stats.dom);
+
+        scene = new THREE.Scene();
+        camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 1000);
+        camera.position.z = 40;
+
+        renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true, powerPreference: "high-performance", precision: "mediump" });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+        document.getElementById('canvas-3d').appendChild(renderer.domElement);
+
+        const posData = new Float32Array(CONFIG.count * 3);
+        for (let i = 0; i < CONFIG.count; i++) {
+            let x, y, z;
+            if (i < CONFIG.count * 0.70) {
+                const r = 8 * (0.95 + Math.random() * 0.1);
+                const theta = Math.random() * Math.PI * 2;
+                const phi = Math.acos(2 * Math.random() - 1);
+                x = r * Math.sin(phi) * Math.cos(theta); y = r * Math.sin(phi) * Math.sin(theta); z = r * Math.cos(phi);
+            } else {
+                const angle = Math.random() * Math.PI * 2;
+                const dist = 10 + Math.sqrt(Math.random()) * 10;
+                x = dist * Math.cos(angle); y = (Math.random() - 0.5) * 0.3; z = dist * Math.sin(angle);
+            }
+            posData[i*3] = x; posData[i*3+1] = y; posData[i*3+2] = z;
+        }
+
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.BufferAttribute(posData, 3));
+
+        // [修改] 纹理渐变调整，让核心更亮更实
+        const canvas = document.createElement('canvas');
+        canvas.width = 32; canvas.height = 32;
+        const ctx = canvas.getContext('2d');
+        const g = ctx.createRadialGradient(16,16,0,16,16,16);
+        g.addColorStop(0, '#ffffff'); 
+        g.addColorStop(0.4, 'rgba(255,255,255,0.6)'); // 中间过渡点更亮
+        g.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = g; ctx.fillRect(0,0,32,32);
+
+        const material = new THREE.PointsMaterial({
+            size: CONFIG.size, 
+            map: new THREE.CanvasTexture(canvas),
+            transparent: true, 
+            opacity: 0.95, // [修改] 不透明度提高到 95%
+            color: CONFIG.baseColor,
+            blending: THREE.AdditiveBlending, 
+            depthWrite: false
+        });
+
+        particles = new THREE.Points(geometry, material);
+        scene.add(particles);
+    }
+
+    async function initAI() {
+        const vision = await FilesetResolver.forVisionTasks("https://unpkg.com/@mediapipe/tasks-vision@0.10.3/wasm");
+        handLandmarker = await HandLandmarker.createFromOptions(vision, {
+            baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`, delegate: "GPU" },
+            runningMode: "VIDEO", numHands: 2
+        });
+        
+        video = document.getElementById('video-feed');
+        skeletonCanvas = document.getElementById('skeleton-canvas');
+        skeletonCtx = skeletonCanvas.getContext('2d');
+
+        navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, frameRate: { ideal: 60 } } }).then((stream) => {
+            video.srcObject = stream;
+            video.addEventListener('loadeddata', () => {
+                skeletonCanvas.width = video.videoWidth; skeletonCanvas.height = video.videoHeight;
+                document.getElementById('loader').style.display = 'none';
+                animate();
+            });
+        });
+    }
+
+    function drawSkeleton(landmarks) {
+        skeletonCtx.lineWidth = 3; skeletonCtx.strokeStyle = "#0f0";
+        const conns = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[0,17],[17,18],[18,19],[19,20]];
+        skeletonCtx.beginPath();
+        conns.forEach(([i, j]) => {
+            const p1 = landmarks[i], p2 = landmarks[j];
+            skeletonCtx.moveTo(p1.x * skeletonCanvas.width, p1.y * skeletonCanvas.height);
+            skeletonCtx.lineTo(p2.x * skeletonCanvas.width, p2.y * skeletonCanvas.height);
+        });
+        skeletonCtx.stroke();
+    }
+
+    function calculateRotation(landmarks) {
+        const p0 = new THREE.Vector3(landmarks[0].x, -landmarks[0].y, landmarks[0].z);
+        const p5 = new THREE.Vector3(landmarks[5].x, -landmarks[5].y, landmarks[5].z);
+        const p17 = new THREE.Vector3(landmarks[17].x, -landmarks[17].y, landmarks[17].z);
+        const v1 = new THREE.Vector3().subVectors(p5, p0).normalize();
+        const v2 = new THREE.Vector3().subVectors(p17, p0).normalize();
+        const vNormal = new THREE.Vector3().crossVectors(v1, v2).normalize();
+        const vSide = new THREE.Vector3().crossVectors(vNormal, v1).normalize();
+        const m = new THREE.Matrix4().makeBasis(vSide, v1, vNormal);
+        return new THREE.Quaternion().setFromRotationMatrix(m);
+    }
+
+    function animate(time) {
+        requestAnimationFrame(animate);
+        stats.begin();
+
+        if (handLandmarker && (time - lastAiTime > AI_INTERVAL)) {
+            if (video.currentTime !== video.lastTime) {
+                video.lastTime = video.currentTime;
+                const results = handLandmarker.detectForVideo(video, time);
+                lastAiTime = time;
+                skeletonCtx.clearRect(0, 0, skeletonCanvas.width, skeletonCanvas.height);
+
+                if (results.landmarks.length > 0) {
+                    for (const lm of results.landmarks) drawSkeleton(lm);
+                    if (results.worldLandmarks.length > 0) targetQuat.copy(calculateRotation(results.worldLandmarks[0]));
+                    if (results.landmarks.length === 2) {
+                        const d = Math.hypot(results.landmarks[0][0].x - results.landmarks[1][0].x, results.landmarks[0][0].y - results.landmarks[1][0].y);
+                        targetScale = Math.max(0.1, d * 3.5);
+                    } else {
+                        const lm = results.landmarks[0];
+                        const d = Math.hypot(lm[4].x - lm[8].x, lm[4].y - lm[8].y);
+                        targetScale = 0.5 + d * 5.0;
+                    }
+                }
+            }
+        }
+
+        currentScale += (targetScale - currentScale) * CONFIG.responseSpeed;
+        particles.scale.setScalar(currentScale);
+        particles.quaternion.slerp(targetQuat, CONFIG.rotationSpeed);
+
+        renderer.render(scene, camera);
+        stats.end();
+    }
+
+    document.getElementById('color-picker').addEventListener('input', (e) => {
+        particles.material.color.set(e.target.value);
+        document.getElementById('color-btn').style.background = e.target.value;
+        document.getElementById('color-btn').style.boxShadow = `0 0 25px ${e.target.value}`;
+    });
+
+    initScene();
+    initAI();
+
+</script>
+</body>
+</html>
