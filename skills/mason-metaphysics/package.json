@@ -1,0 +1,11 @@
+{
+  "name": "mason-metaphysics-skill",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Agent Skill helpers for BaZi, Zi Wei Dou Shu and almanac calculations.",
+  "license": "MIT",
+  "dependencies": {
+    "iztro": "^2.6.0",
+    "lunar-javascript": "^1.7.7"
+  }
+}
