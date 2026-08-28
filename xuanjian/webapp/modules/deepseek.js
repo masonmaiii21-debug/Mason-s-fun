@@ -1,0 +1,5 @@
+import {$,err} from '../core/utils.js';
+import {setState} from '../core/store.js';
+export async function checkDeepSeek(){setState({ds:{status:'checking',ok:false,model:'—',message:'檢測中',latencyMs:null}},{type:'ds'});try{const r=await fetch('/api/deepseek-status',{cache:'no-store'}),raw=await r.text();let j={};try{j=JSON.parse(raw)}catch{j={error:raw}}const ds=r.ok&&j.ok?{status:'online',ok:true,model:j.model||'—',message:j.message||'服務正常',latencyMs:j.latencyMs||null}:{status:'offline',ok:false,model:j.model||'—',message:err(j)||`HTTP ${r.status}`,latencyMs:null};setState({ds},{type:'ds'});return ds}catch(e){const ds={status:'offline',ok:false,model:'—',message:err(e),latencyMs:null};setState({ds},{type:'ds'});return ds}}
+export function initDeepSeek(){$('dsCheck').addEventListener('click',checkDeepSeek)}
+export function renderDeepSeek(s){const d=s.ds;$('dsModel').textContent=d.model||'—';$('dsMsg').textContent=(d.message||'—')+(d.latencyMs?` · ${d.latencyMs}ms`:'');$('dsState').textContent=d.status==='checking'?'檢測中':d.ok?'● 已連接':'● 未連接';$('dsState').className=d.ok?'good':d.status==='checking'?'':'bad'}
